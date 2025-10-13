@@ -1,21 +1,14 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, HTTPException
 import requests
 import base64
-from typing import Optional
 
-app = FastAPI(title="Spotify Local API")
+app = FastAPI(title="Spotify Vercel API")
 
-# Biến cố định - cần thay đổi trực tiếp trong code
 CLIENT_ID = "8b3fc1403b66432ebb25bc9faf2e3de0"
 CLIENT_SECRET = "8fcf7a30219644378e89a34bb4f71b77"
 
-# Biến động - sẽ được cập nhật qua API (state không bền vững trên serverless, nên dùng query params nếu cần)
-current_tokens: dict[str, Optional[str]] = {
-    "access_token": None,
-    "refresh_token": None
-}
-
-def renew_access_token():
+def renew_access_token(refresh_token: str):
+    """Làm mới access token"""
     url = "https://accounts.spotify.com/api/token"
     auth_header = base64.b64encode(f"{CLIENT_ID}:{CLIENT_SECRET}".encode()).decode()
     headers = {
@@ -24,104 +17,112 @@ def renew_access_token():
     }
     data = {
         "grant_type": "refresh_token",
-        "refresh_token": current_tokens["refresh_token"]
+        "refresh_token": refresh_token
     }
     
     try:
         res = requests.post(url, headers=headers, data=data, timeout=10)
         if res.status_code == 200:
-            j = res.json()
-            current_tokens["access_token"] = j.get("access_token")
-            if "refresh_token" in j:
-                current_tokens["refresh_token"] = j["refresh_token"]
-            return current_tokens["access_token"]
+            return res.json()
         else:
-            raise Exception(f"Renew failed: {res.status_code} {res.text}")
-    except requests.exceptions.RequestException as e:
-        raise
+            return None
+    except Exception:
+        return None
 
-def get_currently_playing(access_token):
+def get_currently_playing(access_token: str):
+    """Lấy bài hát đang phát"""
     url = "https://api.spotify.com/v1/me/player/currently-playing"
     headers = {"Authorization": f"Bearer {access_token}"}
     try:
-        res = requests.get(url, headers=headers, timeout=10)
-        return res
-    except requests.exceptions.RequestException as e:
+        return requests.get(url, headers=headers, timeout=10)
+    except Exception as e:
         raise
 
-@app.get("/set-tokens")
-def set_tokens(access_token: str = Query(...), refresh_token: str = Query(...)):
-    """Cập nhật tokens qua URL"""
-    current_tokens["access_token"] = access_token
-    current_tokens["refresh_token"] = refresh_token
-    return {"message": "Tokens updated successfully"}
-
 @app.get("/current")
-def get_current():
-    if not current_tokens["access_token"] or not current_tokens["refresh_token"]:
-        return {"error": "Tokens not set. Please call /set-tokens first"}
-    
+def get_current(
+    access_token: str = Query(..., description="Spotify access token"),
+    refresh_token: str = Query(..., description="Spotify refresh token")
+):
+    """
+    Lấy bài hát đang phát. 
+    Tokens phải được truyền qua query params vì Vercel không lưu state.
+    """
     try:
-        res = get_currently_playing(current_tokens["access_token"])
+        # Thử với access token hiện tại
+        res = get_currently_playing(access_token)
         
-        # Nếu token hết hạn, làm mới và thử lại
+        # Nếu token hết hạn (401), làm mới và thử lại
         if res.status_code == 401:
-            try:
-                renew_access_token()
-                res = get_currently_playing(current_tokens["access_token"])
-            except Exception as e:
-                return {"error": f"Token refresh failed: {str(e)}"}
-
-        if res.status_code == 200:
-            data = res.json()
-            if data.get("is_playing"):
-                item = data["item"]
-                track = item["name"]
-                artist = ", ".join(a["name"] for a in item["artists"])
-                album = item["album"]["name"]
-                return {
-                    "track": track,
-                    "artist": artist,
-                    "album": album,
-                    "is_playing": True
-                }
+            token_data = renew_access_token(refresh_token)
+            if token_data and "access_token" in token_data:
+                new_access_token = token_data["access_token"]
+                new_refresh_token = token_data.get("refresh_token", refresh_token)
+                
+                # Thử lại với token mới
+                res = get_currently_playing(new_access_token)
+                
+                # Trả về token mới để client cập nhật
+                if res.status_code == 200:
+                    data = res.json()
+                    result = parse_track_data(data)
+                    result["new_tokens"] = {
+                        "access_token": new_access_token,
+                        "refresh_token": new_refresh_token
+                    }
+                    return result
             else:
-                return {"is_playing": False}
+                raise HTTPException(status_code=401, detail="Failed to refresh token")
+
+        # Xử lý response bình thường
+        if res.status_code == 200:
+            return parse_track_data(res.json())
         elif res.status_code == 204:
             return {"is_playing": False, "message": "Nothing playing"}
         else:
-            return {"error": f"{res.status_code} - {res.text}"}
+            raise HTTPException(status_code=res.status_code, detail=res.text)
             
-    except requests.exceptions.ConnectionError as e:
+    except requests.exceptions.ConnectionError:
         return {
             "error": "Network connection failed",
-            "is_playing": False,
-            "detail": "Temporary network issue, please try again"
+            "is_playing": False
         }
-    except requests.exceptions.Timeout as e:
+    except requests.exceptions.Timeout:
         return {
             "error": "Request timeout",
-            "is_playing": False,
-            "detail": "Request took too long"
+            "is_playing": False
         }
+    except HTTPException:
+        raise
     except Exception as e:
         return {
-            "error": "Unexpected error occurred",
+            "error": "Unexpected error",
             "is_playing": False,
             "detail": str(e)
         }
 
+def parse_track_data(data: dict):
+    """Parse dữ liệu track từ Spotify API"""
+    if data.get("is_playing"):
+        item = data["item"]
+        return {
+            "track": item["name"],
+            "artist": ", ".join(a["name"] for a in item["artists"]),
+            "album": item["album"]["name"],
+            "is_playing": True
+        }
+    else:
+        return {"is_playing": False}
+
 @app.get("/")
 def root():
     return {
-        "message": "Spotify API",
+        "message": "Spotify API for Vercel",
+        "note": "Tokens must be passed as query params (stateless)",
         "endpoints": {
-            "/set-tokens": "Set access_token and refresh_token via query params",
-            "/current": "Get currently playing track"
-        }
+            "/current": "Get currently playing track (requires access_token & refresh_token as query params)"
+        },
+        "example": "/current?access_token=YOUR_TOKEN&refresh_token=YOUR_REFRESH_TOKEN"
     }
 
-# Để test local
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+# For Vercel
+app = app
