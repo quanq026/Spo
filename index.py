@@ -2,11 +2,6 @@ from fastapi import FastAPI, Query
 import requests
 import base64
 from typing import Optional
-import logging
-
-# Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Spotify Local API")
 
@@ -14,7 +9,7 @@ app = FastAPI(title="Spotify Local API")
 CLIENT_ID = "8b3fc1403b66432ebb25bc9faf2e3de0"
 CLIENT_SECRET = "8fcf7a30219644378e89a34bb4f71b77"
 
-# Biến động - sẽ được cập nhật qua API
+# Biến động - sẽ được cập nhật qua API (state không bền vững trên serverless, nên dùng query params nếu cần)
 current_tokens: dict[str, Optional[str]] = {
     "access_token": None,
     "refresh_token": None
@@ -43,7 +38,6 @@ def renew_access_token():
         else:
             raise Exception(f"Renew failed: {res.status_code} {res.text}")
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error renewing token: {e}")
         raise
 
 def get_currently_playing(access_token):
@@ -53,7 +47,6 @@ def get_currently_playing(access_token):
         res = requests.get(url, headers=headers, timeout=10)
         return res
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error getting currently playing: {e}")
         raise
 
 @app.get("/set-tokens")
@@ -77,7 +70,6 @@ def get_current():
                 renew_access_token()
                 res = get_currently_playing(current_tokens["access_token"])
             except Exception as e:
-                logger.error(f"Error refreshing token: {e}")
                 return {"error": f"Token refresh failed: {str(e)}"}
 
         if res.status_code == 200:
@@ -101,21 +93,18 @@ def get_current():
             return {"error": f"{res.status_code} - {res.text}"}
             
     except requests.exceptions.ConnectionError as e:
-        logger.error(f"Connection error: {e}")
         return {
             "error": "Network connection failed",
             "is_playing": False,
             "detail": "Temporary network issue, please try again"
         }
     except requests.exceptions.Timeout as e:
-        logger.error(f"Timeout error: {e}")
         return {
             "error": "Request timeout",
             "is_playing": False,
             "detail": "Request took too long"
         }
     except Exception as e:
-        logger.error(f"Unexpected error: {e}")
         return {
             "error": "Unexpected error occurred",
             "is_playing": False,
@@ -131,3 +120,8 @@ def root():
             "/current": "Get currently playing track"
         }
     }
+
+# Để test local
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
