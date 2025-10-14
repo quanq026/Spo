@@ -1,16 +1,46 @@
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, HTTPException
 import requests
 import base64
 import os
+import json
+from pathlib import Path
+import time
 
 app = FastAPI(title="Spotify IoT API")
 
 CLIENT_ID = "8b3fc1403b66432ebb25bc9faf2e3de0"
 CLIENT_SECRET = "8fcf7a30219644378e89a34bb4f71b77"
 
-# Lấy tokens từ Environment Variables của Vercel
-SPOTIFY_ACCESS_TOKEN = os.getenv("SPOTIFY_ACCESS_TOKEN", "")
-SPOTIFY_REFRESH_TOKEN = os.getenv("SPOTIFY_REFRESH_TOKEN", "")
+# File cache cho token (Vercel cho phép write vào /tmp)
+TOKEN_CACHE_FILE = "/tmp/spotify_token.json"
+
+def get_cached_token():
+    """Lấy token từ cache hoặc env"""
+    try:
+        if os.path.exists(TOKEN_CACHE_FILE):
+            with open(TOKEN_CACHE_FILE, 'r') as f:
+                cache = json.load(f)
+                # Kiểm tra xem token còn hạn không (buffer 5 phút)
+                if cache.get('expires_at', 0) > time.time() + 300:
+                    return cache.get('access_token')
+    except Exception:
+        pass
+    
+    # Fallback về env variable
+    return os.getenv("SPOTIFY_ACCESS_TOKEN", "")
+
+def save_token_to_cache(access_token: str, expires_in: int = 3600):
+    """Lưu token vào cache"""
+    try:
+        cache_data = {
+            'access_token': access_token,
+            'expires_at': time.time() + expires_in,
+            'updated_at': time.time()
+        }
+        with open(TOKEN_CACHE_FILE, 'w') as f:
+            json.dump(cache_data, f)
+    except Exception as e:
+        print(f"Failed to cache token: {e}")
 
 def renew_access_token(refresh_token: str):
     """Làm mới access token"""
@@ -47,37 +77,45 @@ def get_currently_playing(access_token: str):
 def get_current():
     """
     Endpoint đơn giản cho ESP32/IoT - chỉ cần gọi /current
-    Tokens được lấy từ Environment Variables
+    Token được cache tự động
     """
-    if not SPOTIFY_ACCESS_TOKEN or not SPOTIFY_REFRESH_TOKEN:
+    refresh_token = os.getenv("SPOTIFY_REFRESH_TOKEN", "")
+    
+    if not refresh_token:
         return {
             "error": "Tokens not configured",
-            "message": "Please set SPOTIFY_ACCESS_TOKEN and SPOTIFY_REFRESH_TOKEN in Vercel Environment Variables"
+            "message": "Please set SPOTIFY_REFRESH_TOKEN in Vercel Environment Variables"
         }
     
     try:
-        # Thử với access token từ env
-        res = get_currently_playing(SPOTIFY_ACCESS_TOKEN)
+        # Lấy token từ cache hoặc env
+        access_token = get_cached_token()
+        
+        if not access_token:
+            # Nếu không có token, renew ngay
+            token_data = renew_access_token(refresh_token)
+            if token_data and "access_token" in token_data:
+                access_token = token_data["access_token"]
+                save_token_to_cache(access_token, token_data.get('expires_in', 3600))
+            else:
+                raise HTTPException(status_code=401, detail="Failed to get initial token")
+        
+        # Thử gọi API
+        res = get_currently_playing(access_token)
         
         # Nếu token hết hạn (401), làm mới
         if res.status_code == 401:
-            token_data = renew_access_token(SPOTIFY_REFRESH_TOKEN)
+            token_data = renew_access_token(refresh_token)
             if token_data and "access_token" in token_data:
                 new_access_token = token_data["access_token"]
+                save_token_to_cache(new_access_token, token_data.get('expires_in', 3600))
                 
                 # Thử lại với token mới
                 res = get_currently_playing(new_access_token)
-                
-                # Log token mới (cần update lại env vars trên Vercel)
-                if res.status_code == 200:
-                    data = res.json()
-                    result = parse_track_data(data)
-                    result["note"] = f"⚠️ Token refreshed! Update SPOTIFY_ACCESS_TOKEN in Vercel to: {new_access_token[:20]}..."
-                    return result
             else:
                 raise HTTPException(status_code=401, detail="Failed to refresh token")
 
-        # Xử lý response bình thường
+        # Xử lý response
         if res.status_code == 200:
             return parse_track_data(res.json())
         elif res.status_code == 204:
@@ -119,23 +157,28 @@ def parse_track_data(data: dict):
 
 @app.get("/")
 def root():
-    configured = bool(SPOTIFY_ACCESS_TOKEN and SPOTIFY_REFRESH_TOKEN)
+    refresh_token = os.getenv("SPOTIFY_REFRESH_TOKEN", "")
+    has_cached = os.path.exists(TOKEN_CACHE_FILE)
+    
     return {
         "message": "Spotify API for IoT/ESP32",
-        "status": "✅ Ready" if configured else "❌ Not configured",
+        "status": "✅ Ready" if refresh_token else "❌ Not configured",
+        "cache_status": "✅ Token cached" if has_cached else "⚠️ No cache yet",
         "endpoints": {
-            "/current": "Get currently playing track (simple URL for IoT)"
+            "/current": "Get currently playing track (auto-renews token)",
+            "/ping": "Keep function warm"
         },
         "setup": {
-            "1": "Get tokens from Spotify",
-            "2": "Add to Vercel Environment Variables: SPOTIFY_ACCESS_TOKEN, SPOTIFY_REFRESH_TOKEN",
-            "3": "Redeploy",
-            "4": "Call /current from ESP32"
+            "1": "Get REFRESH_TOKEN from Spotify (only this is needed!)",
+            "2": "Add to Vercel Environment Variables: SPOTIFY_REFRESH_TOKEN",
+            "3": "Deploy - token will auto-renew and cache"
         }
     }
+
 @app.get("/ping")
 def ping():
     """Keep function warm"""
     return {"status": "alive", "timestamp": time.time()}
+
 # For Vercel
 app = app
