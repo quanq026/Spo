@@ -117,16 +117,6 @@ def parse_track_data(data: dict):
     else:
         return {"is_playing": False}
 
-@app.get("/keep-alive")
-def keep_alive():
-    """Endpoint for Vercel Cron to keep function warm"""
-    import time
-    return {
-        "status": "alive",
-        "timestamp": int(time.time()),
-        "message": "Function is warm"
-    }
-
 @app.get("/")
 def root():
     configured = bool(SPOTIFY_ACCESS_TOKEN and SPOTIFY_REFRESH_TOKEN)
@@ -134,8 +124,7 @@ def root():
         "message": "Spotify API for IoT/ESP32",
         "status": "✅ Ready" if configured else "❌ Not configured",
         "endpoints": {
-            "/current": "Get currently playing track (simple URL for IoT)",
-            "/keep-alive": "Keep function warm (auto-called by Vercel Cron)"
+            "/current": "Get currently playing track (simple URL for IoT)"
         },
         "setup": {
             "1": "Get tokens from Spotify",
@@ -144,6 +133,9 @@ def root():
             "4": "Call /current from ESP32"
         }
     }
-
+@app.get("/ping")
+def ping():
+    """Keep function warm"""
+    return {"status": "alive", "timestamp": time.time()}
 # For Vercel
 app = app
