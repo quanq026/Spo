@@ -133,6 +133,9 @@ def root():
             "4": "Call /current from ESP32"
         }
     }
-
+@app.get("/ping")
+def ping():
+    """Keep function warm"""
+    return {"status": "alive", "timestamp": time.time()}
 # For Vercel
 app = app
