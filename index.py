@@ -34,6 +34,8 @@ def renew_access_token(refresh_token: str) -> Optional[dict]:
     
     try:
         res = requests.post(url, headers=headers, data=data, timeout=10)
+        print(f"[DEBUG] Renew token status: {res.status_code}")
+        
         if res.status_code == 200:
             token_data = res.json()
             
@@ -41,9 +43,13 @@ def renew_access_token(refresh_token: str) -> Optional[dict]:
             token_cache["access_token"] = token_data["access_token"]
             token_cache["expires_at"] = time.time() + token_data.get("expires_in", 3600)
             
+            print(f"[DEBUG] Token renewed successfully, expires in {token_data.get('expires_in', 3600)}s")
             return token_data
-        return None
-    except Exception:
+        else:
+            print(f"[DEBUG] Renew failed: {res.text[:200]}")
+            return None
+    except Exception as e:
+        print(f"[DEBUG] Renew exception: {str(e)}")
         return None
 
 def get_valid_token() -> str:
@@ -78,18 +84,24 @@ def get_current():
         # ✅ Lấy token hợp lệ (tự động renew nếu cần)
         access_token = get_valid_token()
         
+        print(f"[DEBUG] Using token: {access_token[:20]}... (expires in {int(token_cache['expires_at'] - time.time())}s)")
+        
         if not access_token:
             raise HTTPException(status_code=401, detail="Cannot get valid token")
         
         # Gọi Spotify API
         res = get_currently_playing(access_token)
         
+        print(f"[DEBUG] Spotify API response: {res.status_code}")
+        
         # Nếu vẫn 401 (token cache sai), force renew
         if res.status_code == 401:
+            print("[DEBUG] Got 401, forcing token renewal...")
             token_data = renew_access_token(SPOTIFY_REFRESH_TOKEN)
             if token_data:
                 access_token = token_data["access_token"]
                 res = get_currently_playing(access_token)
+                print(f"[DEBUG] Retry with new token: {res.status_code}")
             else:
                 raise HTTPException(status_code=401, detail="Failed to refresh token")
         
@@ -104,6 +116,7 @@ def get_current():
     except HTTPException:
         raise
     except Exception as e:
+        print(f"[DEBUG] Exception in get_current: {str(e)}")
         return {
             "error": "Unexpected error",
             "is_playing": False,
@@ -130,12 +143,32 @@ def root():
         "status": "✅ Ready" if configured else "❌ Not configured",
         "token_status": {
             "cached": bool(token_cache["access_token"]),
-            "expires_in": max(0, int(token_cache["expires_at"] - time.time())) if token_cache["expires_at"] else 0
+            "expires_in": max(0, int(token_cache["expires_at"] - time.time())) if token_cache["expires_at"] else 0,
+            "has_refresh_token": bool(SPOTIFY_REFRESH_TOKEN)
         },
         "endpoints": {
-            "/current": "Get currently playing track",
-            "/ping": "Health check"
-        }
+            "/current": "Get currently playing track (use this for keep-warm)",
+            "/debug": "Debug token status"
+        },
+        "note": "Use /current with UptimeRobot/cron to prevent cold starts"
     }
+
+@app.get("/debug")
+def debug():
+    """Debug endpoint để kiểm tra token status"""
+    return {
+        "client_id": CLIENT_ID[:10] + "..." if CLIENT_ID else None,
+        "has_refresh_token": bool(SPOTIFY_REFRESH_TOKEN),
+        "refresh_token_preview": SPOTIFY_REFRESH_TOKEN[:20] + "..." if SPOTIFY_REFRESH_TOKEN else None,
+        "cache": {
+            "has_access_token": bool(token_cache["access_token"]),
+            "access_token_preview": token_cache["access_token"][:20] + "..." if token_cache["access_token"] else None,
+            "expires_at": token_cache["expires_at"],
+            "expires_in_seconds": max(0, int(token_cache["expires_at"] - time.time())) if token_cache["expires_at"] else 0,
+            "is_expired": time.time() >= token_cache["expires_at"] if token_cache["expires_at"] else True
+        },
+        "timestamp": time.time()
+    }
+
 # For Vercel
 app = app
