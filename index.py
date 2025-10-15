@@ -180,22 +180,53 @@ def test_renew():
     old_token = token_cache["access_token"][:20] + "..." if token_cache["access_token"] else "none"
     
     print("[TEST] Force renewing token...")
-    token_data = renew_access_token(SPOTIFY_REFRESH_TOKEN)
     
-    if token_data:
-        new_token = token_cache["access_token"][:20] + "..." if token_cache["access_token"] else "none"
-        return {
-            "success": True,
-            "message": "Token renewed successfully",
-            "old_token_preview": old_token,
-            "new_token_preview": new_token,
-            "expires_in": token_data.get("expires_in", 3600),
-            "token_changed": old_token != new_token
-        }
-    else:
+    # Test renew với error details
+    url = "https://accounts.spotify.com/api/token"
+    auth_header = base64.b64encode(f"{CLIENT_ID}:{CLIENT_SECRET}".encode()).decode()
+    headers = {
+        "Authorization": f"Basic {auth_header}",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+    data = {
+        "grant_type": "refresh_token",
+        "refresh_token": SPOTIFY_REFRESH_TOKEN
+    }
+    
+    try:
+        res = requests.post(url, headers=headers, data=data, timeout=10)
+        print(f"[TEST] Renew response status: {res.status_code}")
+        print(f"[TEST] Renew response: {res.text[:500]}")
+        
+        if res.status_code == 200:
+            token_data = res.json()
+            
+            # Update cache
+            token_cache["access_token"] = token_data["access_token"]
+            token_cache["expires_at"] = time.time() + token_data.get("expires_in", 3600)
+            
+            new_token = token_cache["access_token"][:20] + "..." if token_cache["access_token"] else "none"
+            return {
+                "success": True,
+                "message": "Token renewed successfully",
+                "old_token_preview": old_token,
+                "new_token_preview": new_token,
+                "expires_in": token_data.get("expires_in", 3600),
+                "token_changed": old_token != new_token
+            }
+        else:
+            return {
+                "success": False,
+                "message": "Failed to renew token",
+                "status_code": res.status_code,
+                "error": res.json() if res.text else "No response body",
+                "hint": "Check if refresh token is valid or revoked"
+            }
+    except Exception as e:
         return {
             "success": False,
-            "message": "Failed to renew token"
+            "message": "Exception during renewal",
+            "error": str(e)
         }
 
 # For Vercel
