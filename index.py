@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException
 import requests
-import base64
+import base64  # ✅ THÊM DÒNG NÀY
 import os
 import time
 from typing import Optional
@@ -148,12 +148,55 @@ def root():
         },
         "endpoints": {
             "/current": "Get currently playing track (use this for keep-warm)",
-            "/debug": "Debug token status"
+            "/debug": "Debug token status",
+            "/test-renew": "Test token renewal",
+            "/verify-credentials": "Verify CLIENT_ID/SECRET/REFRESH_TOKEN match"
         },
         "note": "Use /current with UptimeRobot/cron to prevent cold starts"
     }
 
-@app.get("/debug")
+@app.get("/verify-credentials")
+def verify_credentials():
+    """Verify if CLIENT_ID, CLIENT_SECRET, and REFRESH_TOKEN match"""
+    
+    # Test refresh token với credentials hiện tại
+    url = "https://accounts.spotify.com/api/token"
+    auth_header = base64.b64encode(f"{CLIENT_ID}:{CLIENT_SECRET}".encode()).decode()
+    headers = {
+        "Authorization": f"Basic {auth_header}",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+    data = {
+        "grant_type": "refresh_token",
+        "refresh_token": SPOTIFY_REFRESH_TOKEN
+    }
+    
+    try:
+        res = requests.post(url, headers=headers, data=data, timeout=10)
+        
+        return {
+            "client_id": CLIENT_ID,
+            "client_id_length": len(CLIENT_ID) if CLIENT_ID else 0,
+            "client_secret_length": len(CLIENT_SECRET) if CLIENT_SECRET else 0,
+            "refresh_token_length": len(SPOTIFY_REFRESH_TOKEN) if SPOTIFY_REFRESH_TOKEN else 0,
+            "refresh_token_preview": SPOTIFY_REFRESH_TOKEN[:30] + "..." if SPOTIFY_REFRESH_TOKEN else None,
+            "test_result": {
+                "status_code": res.status_code,
+                "success": res.status_code == 200,
+                "response": res.json() if res.text else None
+            },
+            "diagnosis": {
+                "400_invalid_grant": "Refresh token không thuộc về app này, hoặc đã bị revoke",
+                "400_invalid_client": "CLIENT_ID hoặc CLIENT_SECRET sai",
+                "200": "Mọi thứ OK!"
+            }[str(res.status_code)] if res.status_code in [200, 400] else "Unknown error"
+        }
+    except Exception as e:
+        return {
+            "error": str(e),
+            "client_id": CLIENT_ID,
+            "has_all_credentials": bool(CLIENT_ID and CLIENT_SECRET and SPOTIFY_REFRESH_TOKEN)
+        }
 def debug():
     """Debug endpoint để kiểm tra token status"""
     return {
