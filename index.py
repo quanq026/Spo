@@ -170,5 +170,33 @@ def debug():
         "timestamp": time.time()
     }
 
+@app.get("/test-renew")
+def test_renew():
+    """Test token renewal mechanism"""
+    if not SPOTIFY_REFRESH_TOKEN:
+        return {"error": "No refresh token configured"}
+    
+    # Lưu token cũ
+    old_token = token_cache["access_token"][:20] + "..." if token_cache["access_token"] else "none"
+    
+    print("[TEST] Force renewing token...")
+    token_data = renew_access_token(SPOTIFY_REFRESH_TOKEN)
+    
+    if token_data:
+        new_token = token_cache["access_token"][:20] + "..." if token_cache["access_token"] else "none"
+        return {
+            "success": True,
+            "message": "Token renewed successfully",
+            "old_token_preview": old_token,
+            "new_token_preview": new_token,
+            "expires_in": token_data.get("expires_in", 3600),
+            "token_changed": old_token != new_token
+        }
+    else:
+        return {
+            "success": False,
+            "message": "Failed to renew token"
+        }
+
 # For Vercel
 app = app
