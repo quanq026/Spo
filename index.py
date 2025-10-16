@@ -155,7 +155,28 @@ def root():
         "note": "Use /current with UptimeRobot/cron to prevent cold starts"
     }
 
-@app.get("/verify-credentials")
+@app.get("/test-cache")
+def test_cache():
+    """Test xem cache có tồn tại giữa các request không"""
+    import random
+    
+    # Tạo một số ngẫu nhiên và lưu vào cache
+    if "test_number" not in token_cache:
+        token_cache["test_number"] = random.randint(1000, 9999)
+        cache_status = "NEW - Cache mới tạo"
+    else:
+        cache_status = "PERSISTED - Cache vẫn còn từ request trước"
+    
+    return {
+        "test_number": token_cache.get("test_number"),
+        "cache_status": cache_status,
+        "instructions": "Gọi endpoint này 2-3 lần liên tiếp. Nếu test_number GIỐNG NHAU → cache OK. Nếu KHÁC NHAU mỗi lần → cache bị mất (cold start)",
+        "full_cache": {
+            "has_access_token": bool(token_cache.get("access_token")),
+            "expires_at": token_cache.get("expires_at", 0),
+            "test_number": token_cache.get("test_number")
+        }
+    }
 def verify_credentials():
     """Verify if CLIENT_ID, CLIENT_SECRET, and REFRESH_TOKEN match"""
     
