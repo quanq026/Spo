@@ -350,7 +350,7 @@ def set_shuffle(state: bool):
         return {"success": True, "shuffle_state": state}
     raise HTTPException(status_code=res.status_code, detail=res.text)
 
-@app.get("/play_from_queue")
+@app.get("/queue/{index}")
 def play_from_queue(index: int):
     """Phát bài trong hàng chờ theo index (1–20)"""
     access_token = get_valid_token()
