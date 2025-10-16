@@ -291,10 +291,13 @@ def init_tokens():
     }
 
 @app.post("/init")
-def init_tokens_post(access_token: str = "", refresh_token: str = ""):
+async def init_tokens_post(request: dict):
     """Save initial tokens to JSONBin"""
     if not JSONBIN_API_KEY or not JSONBIN_BIN_ID:
         return {"error": "JSONBin not configured"}
+    
+    access_token = request.get("access_token", "")
+    refresh_token = request.get("refresh_token", "")
     
     if not access_token or not refresh_token:
         return {"error": "Both access_token and refresh_token required"}
