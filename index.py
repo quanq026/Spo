@@ -205,12 +205,26 @@ def root():
 
 @app.get("/current")
 def current():
-    """Lấy trạng thái playback hiện tại"""
+    """Lấy trạng thái playback hiện tại, kèm thông tin liked"""
     access_token = get_valid_token()
     res = spotify_request("GET", "/me/player", access_token)
 
     if res.status_code == 200:
-        return parse_track_data(res.json())
+        data = res.json()
+        parsed = parse_track_data(data)
+
+        # ✅ Kiểm tra bài này có nằm trong "Liked Songs" không
+        track_id = parsed.get("track_id")
+        if track_id:
+            like_res = spotify_request("GET", f"/me/tracks/contains?ids={track_id}", access_token)
+            if like_res.status_code == 200:
+                liked_status = like_res.json()[0]
+                parsed["is_liked"] = liked_status
+            else:
+                parsed["is_liked"] = None
+
+        return parsed
+
     elif res.status_code == 204:
         return {"is_playing": False, "message": "Nothing playing"}
     else:
@@ -342,13 +356,23 @@ def get_queue():
         "total": len(queue_list)
     }
 
-@app.get("/shuffle")
-def set_shuffle(state: bool):
+@app.get("/shuffle/{state}")
+def toggle_shuffle(state: str):
+    """Bật hoặc tắt chế độ trộn bài"""
     access_token = get_valid_token()
-    res = spotify_request("PUT", f"/me/player/shuffle?state={'true' if state else 'false'}", access_token)
+    
+    if state.lower() not in ["true", "false"]:
+        raise HTTPException(status_code=400, detail="State must be 'true' or 'false'")
+    
+    res = spotify_request("PUT", f"/me/player/shuffle?state={state.lower()}", access_token)
+    
     if res.status_code in [204, 200]:
-        return {"success": True, "shuffle_state": state}
-    raise HTTPException(status_code=res.status_code, detail=res.text)
+        return {
+            "success": True,
+            "shuffle_state": state.lower() == "true"
+        }
+    else:
+        raise HTTPException(status_code=res.status_code, detail=res.text)
 
 @app.get("/queue/{index}")
 def play_from_queue(index: int):
