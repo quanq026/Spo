@@ -342,6 +342,13 @@ def get_queue():
         "total": len(queue_list)
     }
 
+@app.get("/shuffle")
+def set_shuffle(state: bool):
+    access_token = get_valid_token()
+    res = spotify_request("PUT", f"/me/player/shuffle?state={'true' if state else 'false'}", access_token)
+    if res.status_code in [204, 200]:
+        return {"success": True, "shuffle_state": state}
+    raise HTTPException(status_code=res.status_code, detail=res.text)
 
 @app.get("/force-renew")
 def force_renew():
