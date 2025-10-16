@@ -350,6 +350,44 @@ def set_shuffle(state: bool):
         return {"success": True, "shuffle_state": state}
     raise HTTPException(status_code=res.status_code, detail=res.text)
 
+@app.get("/play_from_queue")
+def play_from_queue(index: int):
+    """Phát bài trong hàng chờ theo index (1–20)"""
+    access_token = get_valid_token()
+    queue_res = spotify_request("GET", "/me/player/queue", access_token)
+    
+    if queue_res.status_code != 200:
+        raise HTTPException(status_code=queue_res.status_code, detail="Failed to get queue")
+    
+    queue_data = queue_res.json()
+    queue_list = queue_data.get("queue", [])
+    current = queue_data.get("currently_playing", {})
+
+    # Gộp tất cả lại thành 1 list để dễ chọn
+    full_list = [current] + queue_list
+
+    if index < 0 or index >= len(full_list):
+        raise HTTPException(status_code=400, detail=f"Index {index} out of range (0–{len(full_list)-1})")
+
+    track = full_list[index]
+    track_id = track.get("id")
+
+    if not track_id:
+        raise HTTPException(status_code=400, detail="Track ID not found")
+
+    body = {"uris": [f"spotify:track:{track_id}"]}
+    res = spotify_request("PUT", "/me/player/play", access_token, json=body)
+
+    if res.status_code in [204, 200]:
+        return {
+            "success": True,
+            "message": f"Now playing: {track.get('name')} - {', '.join(a['name'] for a in track.get('artists', []))}",
+            "track_id": track_id,
+            "index": index
+        }
+    else:
+        raise HTTPException(status_code=res.status_code, detail=res.text)
+
 @app.get("/force-renew")
 def force_renew():
     """Force renew token"""
