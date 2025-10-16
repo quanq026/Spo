@@ -305,7 +305,7 @@ def get_queue():
     queue_items = data.get("queue", [])
 
     queue_list = []
-    for i, item in enumerate(queue_items[:30]):  # Giới hạn 30 bài
+    for i, item in enumerate(queue_items[:20]):  # Giới hạn 30 bài
         album = item.get("album", {})
         images = album.get("images", [])
         thumbnail = images[1]["url"] if len(images) > 1 else (images[0]["url"] if images else "")
