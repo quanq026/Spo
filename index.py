@@ -422,6 +422,23 @@ def play_from_queue(index: int):
     else:
         raise HTTPException(status_code=res.status_code, detail=res.text)
 
+@app.get("/volume/{level}")
+def set_volume(level: int):
+    """Điều chỉnh âm lượng (0–100%)"""
+    if not (0 <= level <= 100):
+        raise HTTPException(status_code=400, detail="Volume must be between 0 and 100")
+
+    access_token = get_valid_token()
+    res = spotify_request("PUT", f"/me/player/volume?volume_percent={level}", access_token)
+
+    if res.status_code in [204, 200]:
+        return {
+            "success": True,
+            "volume_percent": level
+        }
+    else:
+        raise HTTPException(status_code=res.status_code, detail=res.text)
+
 @app.get("/force-renew")
 def force_renew():
     """Force renew token"""
