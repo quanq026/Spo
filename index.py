@@ -292,6 +292,57 @@ def dislike_track():
     
     raise HTTPException(status_code=400, detail="No track playing")
 
+@app.get("/queue")
+def get_queue():
+    """Lấy danh sách bài hát trong hàng chờ (tối đa 30 bài)"""
+    access_token = get_valid_token()
+    res = spotify_request("GET", "/me/player/queue", access_token)
+
+    if res.status_code != 200:
+        raise HTTPException(status_code=res.status_code, detail=res.text)
+
+    data = res.json()
+    queue_items = data.get("queue", [])
+
+    queue_list = []
+    for i, item in enumerate(queue_items[:30]):  # Giới hạn 30 bài
+        album = item.get("album", {})
+        images = album.get("images", [])
+        thumbnail = images[1]["url"] if len(images) > 1 else (images[0]["url"] if images else "")
+        artists = ", ".join(a["name"] for a in item.get("artists", []))
+
+        queue_list.append({
+            "index": i + 1,
+            "track": item.get("name", ""),
+            "artist": artists,
+            "album": album.get("name", ""),
+            "thumbnail": thumbnail,
+            "id": item.get("id", "")
+        })
+
+    # Bài hiện đang phát (nếu có)
+    current = data.get("currently_playing")
+    current_info = None
+    if current:
+        c_album = current.get("album", {})
+        c_images = c_album.get("images", [])
+        c_thumb = c_images[1]["url"] if len(c_images) > 1 else (c_images[0]["url"] if c_images else "")
+        current_info = {
+            "track": current.get("name", ""),
+            "artist": ", ".join(a["name"] for a in current.get("artists", [])),
+            "album": c_album.get("name", ""),
+            "thumbnail": c_thumb,
+            "id": current.get("id", "")
+        }
+
+    return {
+        "success": True,
+        "currently_playing": current_info,
+        "up_next": queue_list,
+        "total": len(queue_list)
+    }
+
+
 @app.get("/force-renew")
 def force_renew():
     """Force renew token"""
