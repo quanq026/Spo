@@ -11,7 +11,7 @@ CLIENT_ID = os.getenv("CLIENT_ID", "")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET", "")
 GITHUB_GIST_ID = os.getenv("GITHUB_GIST_ID", "")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
-GIST_FILENAME = os.getenv("GIST_FILENAME", "gistfile1.txt")
+GIST_FILENAME = os.getenv("GIST_FILENAME", "spotify_tokens.json")
 
 # ======================
 # GIST STORAGE
@@ -102,50 +102,65 @@ def get_valid_token() -> str:
     refresh_token = cached.get("refresh_token", "")
     expires_at = cached.get("expires_at", 0)
 
+    if not access_token:
+        raise HTTPException(status_code=400, detail="No access_token in Gist. Call /init first")
+    
     if not refresh_token:
-        raise HTTPException(status_code=400, detail="No refresh_token found in Gist")
+        raise HTTPException(status_code=400, detail="No refresh_token in Gist")
 
+    # Renew if expired or near expiry (< 5 min)
     if time.time() >= expires_at - 300:
-        print("[DEBUG] Token expired or near expiry → renewing...")
+        print(f"[DEBUG] Token expires in {int(expires_at - time.time())}s, renewing...")
         token_data = renew_access_token(refresh_token)
         if token_data:
             return token_data["access_token"]
+        else:
+            raise HTTPException(status_code=500, detail="Failed to renew token")
 
     return access_token
 
 # ======================
-# SPOTIFY API CALLS
+# SPOTIFY API HELPERS
 # ======================
 def spotify_request(method, endpoint, access_token, **kwargs):
-    """Helper gửi request Spotify"""
+    """Helper gửi request Spotify với retry logic"""
     url = f"https://api.spotify.com/v1{endpoint}"
     headers = {"Authorization": f"Bearer {access_token}"}
     res = requests.request(method, url, headers=headers, timeout=10, **kwargs)
+    
+    # Retry nếu 401 (token expired)
+    if res.status_code == 401:
+        print("[DEBUG] Got 401, retrying with fresh token...")
+        cached = load_token_from_gist()
+        token_data = renew_access_token(cached.get("refresh_token", ""))
+        if token_data:
+            headers["Authorization"] = f"Bearer {token_data['access_token']}"
+            res = requests.request(method, url, headers=headers, timeout=10, **kwargs)
+    
     return res
 
-def get_currently_playing(access_token: str):
-    return spotify_request("GET", "/me/player/currently-playing", access_token)
-
 def parse_time(ms: int):
-    """Format ms -> mm:ss có padding"""
+    """Format ms -> mm:ss"""
     minutes = int(ms / 60000)
     seconds = int((ms % 60000) / 1000)
     return f"{minutes:02}:{seconds:02}"
 
 def parse_track_data(data: dict):
-    """Trả về JSON chi tiết"""
+    """Parse playback state thành JSON response"""
     if not data or not data.get("item"):
-        return {"is_playing": False, "message": "No track data"}
+        return {"is_playing": False, "message": "No active playback"}
 
     item = data["item"]
     album = item.get("album", {})
     images = album.get("images", [])
     thumbnail = images[1]["url"] if len(images) > 1 else (images[0]["url"] if images else "")
+    
     progress_ms = data.get("progress_ms", 0)
     duration_ms = item.get("duration_ms", 0)
     progress_percent = (progress_ms / duration_ms * 100) if duration_ms else 0
 
     return {
+        "is_playing": data.get("is_playing", False),
         "track": item.get("name", ""),
         "artist": ", ".join(a["name"] for a in item.get("artists", [])),
         "album": album.get("name", ""),
@@ -155,22 +170,23 @@ def parse_track_data(data: dict):
         "progress_percent": round(progress_percent, 2),
         "progress": f"{parse_time(progress_ms)} / {parse_time(duration_ms)}",
         "device": data.get("device", {}).get("name", ""),
-        "volume_percent": data.get("device", {}).get("volume_percent", None),
+        "volume_percent": data.get("device", {}).get("volume_percent"),
         "shuffle_state": data.get("shuffle_state", False),
         "repeat_state": data.get("repeat_state", "off"),
-        "is_playing": data.get("is_playing", False),
+        "track_id": item.get("id"),
     }
 
-def get_playback_state(access_token: str):
-    return spotify_request("GET", "/me/player", access_token)
-
 # ======================
-# CORE ROUTES
+# ROUTES
 # ======================
 @app.get("/")
 def root():
+    cached = load_token_from_gist()
+    has_tokens = bool(cached.get("access_token") and cached.get("refresh_token"))
+    
     return {
-        "status": "✅ Gist storage active",
+        "status": "✅ Ready" if has_tokens else "⚠️ Not initialized",
+        "storage": "GitHub Gist",
         "gist_id": GITHUB_GIST_ID[:10] + "..." if GITHUB_GIST_ID else None,
         "endpoints": {
             "/current": "Get detailed playback state",
@@ -178,98 +194,107 @@ def root():
             "/pause": "Pause playback",
             "/next": "Skip to next track",
             "/prev": "Skip to previous track",
-            "/like": "Save track to library",
-            "/dislike": "Remove track from library",
+            "/like": "Save current track to library",
+            "/dislike": "Remove current track from library",
             "/force-renew": "Force token renewal",
-            "/debug": "Inspect token",
-            "/init": "Initialize Gist with tokens",
+            "/debug": "Debug token status",
+            "/init": "Initialize Gist (POST with tokens)",
         },
+        "setup_required": not has_tokens
     }
 
 @app.get("/current")
 def current():
+    """Lấy trạng thái playback hiện tại"""
     access_token = get_valid_token()
-    res = get_currently_playing(access_token)
-
-    if res.status_code == 401:
-        print("[DEBUG] 401 → retry renew")
-        cached = load_token_from_gist()
-        token_data = renew_access_token(cached.get("refresh_token", ""))
-        if token_data:
-            access_token = token_data["access_token"]
-            res = get_currently_playing(access_token)
+    res = spotify_request("GET", "/me/player", access_token)
 
     if res.status_code == 200:
-        data = res.json()
-        if not data.get("item"):
-            return {"is_playing": False, "message": "Nothing playing"}
-        # merge state info for volume, device...
-        playback_res = get_playback_state(access_token)
-        if playback_res.status_code == 200:
-            state = playback_res.json()
-            data.update(state)
-        return parse_track_data(data)
+        return parse_track_data(res.json())
     elif res.status_code == 204:
         return {"is_playing": False, "message": "Nothing playing"}
     else:
         raise HTTPException(status_code=res.status_code, detail=res.text)
 
-def do_action_and_return_state(action_endpoint, method="POST"):
-    """Thực hiện hành động Spotify và trả trạng thái mới"""
+@app.get("/play")
+def play():
+    """Resume playback"""
     access_token = get_valid_token()
-    res = spotify_request(method, action_endpoint, access_token)
+    res = spotify_request("PUT", "/me/player/play", access_token)
+    
     if res.status_code in [204, 200]:
-        # Delay nhẹ để Spotify cập nhật trạng thái
-        time.sleep(0.5)
-        now = get_currently_playing(access_token)
-        if now.status_code == 200:
-            playback = get_playback_state(access_token)
-            if playback.status_code == 200:
-                data = now.json()
-                data.update(playback.json())
-                return parse_track_data(data)
+        return {"success": True, "action": "play"}
     raise HTTPException(status_code=res.status_code, detail=res.text)
 
-@app.get("/play")
-def play(): return do_action_and_return_state("/me/player/play")
-
 @app.get("/pause")
-def pause(): return do_action_and_return_state("/me/player/pause")
+def pause():
+    """Pause playback"""
+    access_token = get_valid_token()
+    res = spotify_request("PUT", "/me/player/pause", access_token)
+    
+    if res.status_code in [204, 200]:
+        return {"success": True, "action": "pause"}
+    raise HTTPException(status_code=res.status_code, detail=res.text)
 
 @app.get("/next")
-def next_track(): return do_action_and_return_state("/me/player/next")
+def next_track():
+    """Skip to next track"""
+    access_token = get_valid_token()
+    res = spotify_request("POST", "/me/player/next", access_token)
+    
+    if res.status_code in [204, 200]:
+        return {"success": True, "action": "next"}
+    raise HTTPException(status_code=res.status_code, detail=res.text)
 
 @app.get("/prev")
-def prev_track(): return do_action_and_return_state("/me/player/previous")
+def prev_track():
+    """Skip to previous track"""
+    access_token = get_valid_token()
+    res = spotify_request("POST", "/me/player/previous", access_token)
+    
+    if res.status_code in [204, 200]:
+        return {"success": True, "action": "previous"}
+    raise HTTPException(status_code=res.status_code, detail=res.text)
 
 @app.get("/like")
 def like_track():
     """Save current track to library"""
     access_token = get_valid_token()
-    current = get_currently_playing(access_token)
+    
+    # Get current track
+    current = spotify_request("GET", "/me/player", access_token)
     if current.status_code == 200:
         data = current.json()
         track_id = data.get("item", {}).get("id")
         if track_id:
-            spotify_request("PUT", f"/me/tracks?ids={track_id}", access_token)
-            return do_action_and_return_state("/me/player/currently-playing", method="GET")
-    raise HTTPException(status_code=400, detail="No track to like")
+            res = spotify_request("PUT", f"/me/tracks?ids={track_id}", access_token)
+            if res.status_code in [200, 204]:
+                return {"success": True, "action": "liked", "track_id": track_id}
+            raise HTTPException(status_code=res.status_code, detail=res.text)
+    
+    raise HTTPException(status_code=400, detail="No track playing")
 
 @app.get("/dislike")
 def dislike_track():
     """Remove current track from library"""
     access_token = get_valid_token()
-    current = get_currently_playing(access_token)
+    
+    # Get current track
+    current = spotify_request("GET", "/me/player", access_token)
     if current.status_code == 200:
         data = current.json()
         track_id = data.get("item", {}).get("id")
         if track_id:
-            spotify_request("DELETE", f"/me/tracks?ids={track_id}", access_token)
-            return do_action_and_return_state("/me/player/currently-playing", method="GET")
-    raise HTTPException(status_code=400, detail="No track to dislike")
+            res = spotify_request("DELETE", f"/me/tracks?ids={track_id}", access_token)
+            if res.status_code in [200, 204]:
+                return {"success": True, "action": "disliked", "track_id": track_id}
+            raise HTTPException(status_code=res.status_code, detail=res.text)
+    
+    raise HTTPException(status_code=400, detail="No track playing")
 
 @app.get("/force-renew")
 def force_renew():
+    """Force renew token"""
     cached = load_token_from_gist()
     refresh_token = cached.get("refresh_token", "")
     if not refresh_token:
@@ -284,28 +309,37 @@ def force_renew():
 
 @app.get("/debug")
 def debug():
+    """Debug token status"""
     cached = load_token_from_gist()
+    expires_at = cached.get("expires_at", 0)
+    expires_in = int(expires_at - time.time())
+    
     return {
         "gist_id": GITHUB_GIST_ID[:10] + "..." if GITHUB_GIST_ID else None,
-        "access_token_preview": cached.get("access_token", "")[:20] + "...",
+        "access_token_preview": cached.get("access_token", "")[:20] + "..." if cached.get("access_token") else None,
         "has_refresh_token": bool(cached.get("refresh_token")),
-        "expires_at": cached.get("expires_at"),
-        "expires_in_seconds": int(cached.get("expires_at", 0) - time.time()),
+        "expires_at": expires_at,
+        "expires_in_seconds": expires_in,
+        "is_expired": expires_in <= 0,
+        "timestamp": time.time()
     }
 
 @app.post("/init")
-def init_tokens(request: dict):
+async def init_tokens(request: dict):
+    """Initialize Gist with tokens"""
     access_token = request.get("access_token", "")
     refresh_token = request.get("refresh_token", "")
+    
     if not access_token or not refresh_token:
-        return {"error": "Both tokens required"}
+        return {"error": "Both access_token and refresh_token required"}
 
     expires_at = time.time() + 3600
     success = save_token_to_gist(access_token, refresh_token, expires_at)
+    
     return (
-        {"success": True, "message": "Saved to Gist", "expires_in": 3600}
+        {"success": True, "message": "Tokens saved to Gist", "expires_in": 3600}
         if success
-        else {"success": False, "message": "Failed to save"}
+        else {"success": False, "message": "Failed to save to Gist"}
     )
 
 app = app
