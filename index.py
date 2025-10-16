@@ -352,38 +352,48 @@ def set_shuffle(state: bool):
 
 @app.get("/queue/{index}")
 def play_from_queue(index: int):
-    """Phát bài trong hàng chờ theo index (1–20)"""
+    """Phát bài trong context hiện tại thay vì reset queue"""
     access_token = get_valid_token()
-    queue_res = spotify_request("GET", "/me/player/queue", access_token)
+
+    # Lấy thông tin player (để biết context_uri)
+    player_res = spotify_request("GET", "/me/player", access_token)
+    if player_res.status_code != 200:
+        raise HTTPException(status_code=player_res.status_code, detail="Cannot get player info")
     
+    player_data = player_res.json()
+    context_uri = player_data.get("context", {}).get("uri", None)
+
+    # Lấy queue
+    queue_res = spotify_request("GET", "/me/player/queue", access_token)
     if queue_res.status_code != 200:
         raise HTTPException(status_code=queue_res.status_code, detail="Failed to get queue")
-    
+
     queue_data = queue_res.json()
     queue_list = queue_data.get("queue", [])
     current = queue_data.get("currently_playing", {})
-
-    # Gộp tất cả lại thành 1 list để dễ chọn
     full_list = [current] + queue_list
 
     if index < 0 or index >= len(full_list):
-        raise HTTPException(status_code=400, detail=f"Index {index} out of range (0–{len(full_list)-1})")
+        raise HTTPException(status_code=400, detail=f"Index {index} out of range")
 
-    track = full_list[index]
-    track_id = track.get("id")
+    target_track = full_list[index]
+    track_id = target_track.get("id")
 
-    if not track_id:
-        raise HTTPException(status_code=400, detail="Track ID not found")
+    # Nếu có context (playlist/album), phát theo context
+    if context_uri:
+        body = {"context_uri": context_uri, "offset": {"uri": f"spotify:track:{track_id}"}}
+    else:
+        # Nếu không có context (ví dụ đang phát single lẻ)
+        body = {"uris": [f"spotify:track:{track_id}"]}
 
-    body = {"uris": [f"spotify:track:{track_id}"]}
     res = spotify_request("PUT", "/me/player/play", access_token, json=body)
 
     if res.status_code in [204, 200]:
         return {
             "success": True,
-            "message": f"Now playing: {track.get('name')} - {', '.join(a['name'] for a in track.get('artists', []))}",
+            "message": f"Now playing {target_track.get('name')} by {', '.join(a['name'] for a in target_track.get('artists', []))}",
             "track_id": track_id,
-            "index": index
+            "used_context": bool(context_uri)
         }
     else:
         raise HTTPException(status_code=res.status_code, detail=res.text)
