@@ -16,13 +16,7 @@ GIST_FILENAME = os.getenv("GIST_FILENAME", "spotify_tokens.json")
 # ======================
 # GIST STORAGE
 # ======================
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Cho phép mọi domain (hoặc chỉ định cụ thể)
-    allow_credentials=True,
-    allow_methods=["*"],  # GET, POST, PUT, DELETE...
-    allow_headers=["*"],  # Cho phép mọi headers
-)
+
 
 def load_token_from_gist() -> dict:
     """Đọc token từ GitHub Gist"""
